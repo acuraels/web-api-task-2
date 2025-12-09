@@ -3,7 +3,13 @@ import asyncio
 import random
 
 import httpx
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Depends,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, ConfigDict
 
 from sqlalchemy import String, Text, Boolean, Integer, select
@@ -21,7 +27,7 @@ from sqlalchemy.ext.asyncio import (
 
 app = FastAPI(
     title="TODO API + WebSocket + Background. Устинов Даниил Николаевич РИ-330948",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
@@ -90,6 +96,76 @@ class Task(TaskBase):
 
 
 # =======================
+#   WebSocket manager
+# =======================
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"[ws] client connected, total={len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        print(f"[ws] client disconnected, total={len(self.active_connections)}")
+
+    async def broadcast(self, message: dict) -> None:
+        """
+        Рассылаем сообщение всем активным клиентам.
+        Если какой-то отвалился — убираем его.
+        """
+        for ws in list(self.active_connections):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
+
+async def notify_task_event(event: str, task: Optional[TaskDB] = None, task_id: Optional[int] = None) -> None:
+    """
+    Обёртка для рассылки событий по WebSocket.
+    """
+    payload = {
+        "event": event,
+        "task_id": task_id or (task.id if task else None),
+        "task": None,
+    }
+
+    if task is not None:
+        # преобразуем ORM-объект в Pydantic-модель, затем в dict
+        payload["task"] = Task.model_validate(task).model_dump()
+
+    await manager.broadcast(payload)
+
+
+# =======================
+#   WebSocket endpoint
+# =======================
+
+@app.websocket("/ws/tasks")
+async def websocket_tasks(websocket: WebSocket):
+    """
+    WebSocket-канал для уведомлений о задачах.
+    Клиент может ничего не отправлять — мы просто держим соединение
+    и пушим события с сервера.
+    """
+    await manager.connect(websocket)
+    try:
+        while True:
+            # ждём любые сообщения от клиента, чтобы соединение не умиралo
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+# =======================
 #   Внешний источник данных
 # =======================
 
@@ -134,6 +210,9 @@ async def create_task_from_external(session: AsyncSession) -> TaskDB:
     await session.commit()
     await session.refresh(task)
 
+    # оповещаем по WebSocket
+    await notify_task_event("created_external", task=task)
+
     return task
 
 
@@ -172,7 +251,6 @@ async def on_startup() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Запускаем фоновую задачу (асинхронный цикл)
     asyncio.create_task(background_task_generator(period_seconds=60))
 
 
@@ -214,6 +292,9 @@ async def create_task(
     session.add(task)
     await session.commit()
     await session.refresh(task)  # подтянуть id из БД
+
+    await notify_task_event("created", task=task)
+
     return task
 
 
@@ -234,6 +315,9 @@ async def update_task(
 
     await session.commit()
     await session.refresh(task)
+
+    await notify_task_event("updated", task=task)
+
     return task
 
 
@@ -248,6 +332,9 @@ async def delete_task(
 
     await session.delete(task)
     await session.commit()
+
+    await notify_task_event("deleted", task_id=task_id)
+
     return {"status": "deleted"}
 
 
