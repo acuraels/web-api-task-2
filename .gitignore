@@ -1,0 +1,12 @@
+# виртуальное окружение
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# SQLite-база
+*.db
+
+# VS Code
+.vscode/
