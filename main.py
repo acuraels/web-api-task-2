@@ -1,5 +1,8 @@
 from typing import List, Optional, AsyncGenerator
+import asyncio
+import random
 
+import httpx
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, ConfigDict
 
@@ -18,7 +21,7 @@ from sqlalchemy.ext.asyncio import (
 
 app = FastAPI(
     title="TODO API + WebSocket + Background. Устинов Даниил Николаевич РИ-330948",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -56,15 +59,6 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
-    """
-    При старте приложения создаём таблицы (если их ещё нет).
-    """
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 # =======================
 #   Pydantic-модели
 # =======================
@@ -93,6 +87,93 @@ class Task(TaskBase):
 
     # важно для возврата ORM-объектов напрямую
     model_config = ConfigDict(from_attributes=True)
+
+
+# =======================
+#   Внешний источник данных
+# =======================
+
+EXTERNAL_TODO_URL = "https://jsonplaceholder.typicode.com/todos"
+
+
+async def fetch_external_todo() -> dict:
+    """
+    Получить одну задачу со стороннего API через httpx.
+    Берём случайный todo с id от 1 до 200.
+    """
+    todo_id = random.randint(1, 200)
+    url = f"{EXTERNAL_TODO_URL}/{todo_id}"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        return data
+
+
+async def create_task_from_external(session: AsyncSession) -> TaskDB:
+    """
+    Функция, которая забирает задачу из внешнего API
+    и сохраняет её в нашу базу данных.
+    """
+    data = await fetch_external_todo()
+
+    title = data.get("title", "Imported task")
+    completed = bool(data.get("completed", False))
+    remote_id = data.get("id")
+
+    description = f"Imported from JSONPlaceholder, remote_id={remote_id}"
+
+    task = TaskDB(
+        title=title,
+        description=description,
+        completed=completed,
+    )
+
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+
+    return task
+
+
+# =======================
+#   Фоновая задача
+# =======================
+
+async def background_task_generator(period_seconds: int = 60) -> None:
+    """
+    Бесконечный цикл, который периодически создаёт задачи
+    из внешнего API. Запускается один раз при старте приложения.
+    """
+    while True:
+        async with AsyncSessionLocal() as session:
+            try:
+                await create_task_from_external(session)
+                print("[background] Imported task from external API")
+            except Exception as e:
+                # В учебном проекте просто печатаем ошибку
+                print(f"[background] Error while importing task: {e}")
+
+        await asyncio.sleep(period_seconds)
+
+
+# =======================
+#   Startup hook
+# =======================
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    """
+    При старте приложения:
+    1. создаём таблицы (если их ещё нет),
+    2. запускаем фоновый генератор задач.
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    # Запускаем фоновую задачу (асинхронный цикл)
+    asyncio.create_task(background_task_generator(period_seconds=60))
 
 
 # =======================
@@ -168,3 +249,20 @@ async def delete_task(
     await session.delete(task)
     await session.commit()
     return {"status": "deleted"}
+
+
+# =======================
+#   Ручной запуск фоновой задачи
+# =======================
+
+@app.post("/task-generator/run", response_model=Task)
+async def run_task_generator(
+    session: AsyncSession = Depends(get_session),
+) -> Task:
+    """
+    Принудительный запуск генератора задач.
+    Создаёт одну задачу на основе внешнего API
+    и возвращает её.
+    """
+    task = await create_task_from_external(session)
+    return task
