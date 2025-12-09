@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>TODO API CORS + WebSocket Test</title>
+    <author>Устинов Даниил Николаевич РИ-330948</author>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #0f172a;
+            color: #e5e7eb;
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1.2fr 1fr;
+            gap: 20px;
+        }
+
+        .card {
+            background: #020617;
+            border-radius: 10px;
+            padding: 16px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+            color: #9ca3af;
+        }
+
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 8px 10px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            border: 1px solid #1f2937;
+            background: #020617;
+            color: #e5e7eb;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+
+        button {
+            padding: 8px 14px;
+            border-radius: 6px;
+            border: none;
+            background: #4f46e5;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #4338ca;
+        }
+
+        .btn-secondary {
+            background: #374151;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+
+        pre {
+            background: #020617;
+            border-radius: 8px;
+            padding: 10px;
+            max-height: 260px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+
+        ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        li {
+            padding: 6px 0;
+            border-bottom: 1px solid #111827;
+            font-size: 14px;
+        }
+
+        .task-completed {
+            color: #22c55e;
+        }
+
+        .small {
+            font-size: 12px;
+            color: #9ca3af;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>TODO API: CORS + WebSocket тест</h1>
+    <p class="small">
+        Backend: <code>http://127.0.0.1:8000</code> · WS: <code>ws://127.0.0.1:8000/ws/tasks</code>
+    </p>
+
+    <div class="container">
+        <!-- Левая колонка: REST -->
+        <div class="card">
+            <h2>REST: задачи</h2>
+            <button id="loadTasksBtn" class="btn-secondary">Загрузить задачи (GET /tasks)</button>
+
+            <ul id="tasksList"></ul>
+
+            <hr />
+
+            <h3>Создать задачу (POST /tasks)</h3>
+            <form id="createTaskForm">
+                <label for="title">Название</label>
+                <input id="title" type="text" required placeholder="Например: Сделать лабу" />
+
+                <label for="description">Описание</label>
+                <textarea id="description" placeholder="Например: По основам Web API"></textarea>
+
+                <label>
+                    <input type="checkbox" id="completed" />
+                    Задача выполнена
+                </label>
+
+                <button type="submit">Создать задачу</button>
+            </form>
+        </div>
+
+        <!-- Правая колонка: WebSocket -->
+        <div class="card">
+            <h2>WebSocket: события задач</h2>
+            <p class="small" id="wsStatus">Статус: подключение...</p>
+            <pre id="wsLog"></pre>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:8000";
+        const WS_URL = "ws://127.0.0.1:8000/ws/tasks";
+
+        const tasksListEl = document.getElementById("tasksList");
+        const loadTasksBtn = document.getElementById("loadTasksBtn");
+        const createTaskForm = document.getElementById("createTaskForm");
+        const wsLogEl = document.getElementById("wsLog");
+        const wsStatusEl = document.getElementById("wsStatus");
+
+        // ============= REST =============
+
+        async function loadTasks() {
+            tasksListEl.innerHTML = "";
+            try {
+                const res = await fetch(`${API_BASE}/tasks`);
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                if (!Array.isArray(data)) return;
+
+                for (const task of data) {
+                    const li = document.createElement("li");
+                    li.innerHTML = `
+                        <strong>#${task.id}</strong> ${task.title}
+                        ${task.completed ? '<span class="task-completed">(done)</span>' : ""}
+                        <div class="small">${task.description ?? ""}</div>
+                    `;
+                    tasksListEl.appendChild(li);
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Ошибка при загрузке задач (см. консоль)");
+            }
+        }
+
+        loadTasksBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            loadTasks();
+        });
+
+        createTaskForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            const title = document.getElementById("title").value.trim();
+            const description = document.getElementById("description").value.trim();
+            const completed = document.getElementById("completed").checked;
+
+            if (!title) {
+                alert("Название обязательно");
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/tasks`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ title, description, completed }),
+                });
+
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+
+                document.getElementById("title").value = "";
+                document.getElementById("description").value = "";
+                document.getElementById("completed").checked = false;
+
+                await loadTasks();
+            } catch (err) {
+                console.error(err);
+                alert("Ошибка при создании задачи (см. консоль)");
+            }
+        });
+
+        // ============= WebSocket =============
+
+        function logWs(message) {
+            const time = new Date().toLocaleTimeString();
+            wsLogEl.textContent += `[${time}] ${message}\n`;
+            wsLogEl.scrollTop = wsLogEl.scrollHeight;
+        }
+
+        function connectWebSocket() {
+            const ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                wsStatusEl.textContent = "Статус: подключено";
+                logWs("WebSocket подключен");
+                // периодически отправляем ping, чтобы соединение жило
+                setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send("ping");
+                    }
+                }, 5000);
+            };
+
+            ws.onmessage = (event) => {
+                logWs(event.data);
+            };
+
+            ws.onclose = () => {
+                wsStatusEl.textContent = "Статус: отключено (переподключение...)";
+                logWs("WebSocket отключен, пытаюсь переподключиться...");
+                setTimeout(connectWebSocket, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket error:", err);
+            };
+        }
+
+        connectWebSocket();
+        loadTasks(); // сразу подгрузим задачи при открытии страницы
+    </script>
+</body>
+
+</html>

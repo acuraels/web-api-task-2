@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from fastapi.middleware.cors import CORSMiddleware
 
 # =======================
 #   FastAPI app
@@ -30,6 +31,13 @@ app = FastAPI(
     version="0.4.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/ping")
 async def ping():
